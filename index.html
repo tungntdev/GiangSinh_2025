@@ -92,6 +92,7 @@
         <video id="webcam" autoplay playsinline style="display:none;"></video>
         <canvas id="webcam-preview"></canvas>
     </div>
+    <audio id="bg-music" src="./music.mp3" loop preload="auto" style="display:none"></audio>
 
     <script type="module">
         import * as THREE from 'three';
@@ -139,6 +140,7 @@
         let photoMeshGroup = new THREE.Group();
         let handLandmarker, video, webcamCanvas, webcamCtx;
         let caneTexture; 
+        let bgMusic;
 
         async function init() {
             initThree();
@@ -155,6 +157,9 @@
             const loader = document.getElementById('loader');
             loader.style.opacity = 0;
             setTimeout(() => loader.remove(), 800);
+
+            bgMusic = document.getElementById('bg-music');
+            if (bgMusic) { bgMusic.volume = 0.6; tryPlayMusic(); }
 
             animate();
         }
@@ -530,6 +535,12 @@
             }
         }
 
+        function tryPlayMusic() {
+            if (!bgMusic) return;
+            if (!bgMusic.paused) return;
+            bgMusic.play().catch(() => {});
+        }
+
         function setupEvents() {
             window.addEventListener('resize', () => {
                 camera.aspect = window.innerWidth / window.innerHeight;
@@ -544,6 +555,10 @@
                     document.querySelector('h1').classList.toggle('ui-hidden');
                 }
             });
+
+            window.addEventListener('click', () => { tryPlayMusic(); });
+            window.addEventListener('touchstart', () => { tryPlayMusic(); }, { passive: true });
+            window.addEventListener('keydown', () => { tryPlayMusic(); });
         }
 
         function animate() {
