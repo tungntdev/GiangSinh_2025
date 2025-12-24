@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NOEL V2 - Merry Christmas</title>
+    <title>For my love - Merry christmas</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000000; font-family: 'Times New Roman', serif; }
         #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
@@ -19,6 +19,36 @@
         }
         
         .ui-hidden { opacity: 0; transition: opacity 0.5s ease; }
+
+        /* Greeting Card Overlay */
+        #card-overlay {
+            position: fixed; inset: 0; z-index: 999; display: none;
+            align-items: center; justify-content: center;
+            background: rgba(0,0,0,0.55);
+            backdrop-filter: blur(2px);
+        }
+        #card-overlay.show { display: flex; animation: fadeIn 0.25s ease-out; }
+        @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+        .card {
+            width: min(720px, 86vw); padding: 24px 28px; border-radius: 18px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(255,245,220,0.87));
+            box-shadow: 0 20px 60px rgba(0,0,0,0.45), inset 0 0 0 2px rgba(212,175,55,0.35);
+            border: 1px solid rgba(212,175,55,0.35);
+        }
+        .card-title {
+            font-family: 'Cinzel', serif; font-size: 32px; color: #b88a00; text-align: center;
+            margin-bottom: 12px; letter-spacing: 2px;
+        }
+        .card-message {
+            font-size: 22px; line-height: 1.55; color: #222; text-align: center;
+            white-space: pre-line;
+        }
+        .card-actions { display: flex; justify-content: center; margin-top: 18px; }
+        #card-close {
+            appearance: none; border: none; padding: 10px 16px; border-radius: 20px;
+            background: #b88a00; color: #fff; cursor: pointer;
+            box-shadow: 0 6px 20px rgba(184,138,0,0.4);
+        }
 
         /* Loading */
         #loader {
@@ -87,6 +117,16 @@
         <h1>Merry Christmas</h1>
     </div>
 
+    <div id="card-overlay">
+        <div class="card">
+            <div class="card-title">Thiệp chúc mừng</div>
+            <div id="card-message" class="card-message"></div>
+            <div class="card-actions">
+                <button id="card-close">Đóng</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Webcam hidden structure -->
     <div id="webcam-wrapper">
         <video id="webcam" autoplay playsinline style="display:none;"></video>
@@ -125,12 +165,21 @@
         // Danh sách ảnh mặc định (chủ đề Giáng sinh)
         const DEFAULT_PHOTOS = Array.from({length: 5}, (_, i) => `./${i+1}.jpg`);
 
+        // Các lời chúc sẽ hiển thị bằng hiệu ứng "những ngôi sao kết hợp lại"
+        const MESSAGES = [
+            "Chúc cô gái đặc biệt với anh một Noel ngọt ngào,\nbình an và tràn đầy yêu thương."
+        ];
+
         const STATE = {
             mode: 'TREE', 
             focusIndex: -1, 
             focusTarget: null,
             hand: { detected: false, x: 0, y: 0 },
-            rotation: { x: 0, y: 0 } 
+            rotation: { x: 0, y: 0 },
+            messageIndex: 0,
+            messageTimer: 0,
+            mouseActive: false,
+            mouse: { x: 0, y: 0 }
         };
 
         let scene, camera, renderer, composer;
@@ -141,6 +190,7 @@
         let handLandmarker, video, webcamCanvas, webcamCtx;
         let caneTexture; 
         let bgMusic;
+        let starTexture; // texture sao nhỏ để tạo Sprite hạt bụi
 
         async function init() {
             initThree();
@@ -151,7 +201,11 @@
             createDust();     
             setupPostProcessing();
             setupEvents();
-            await initMediaPipe();
+            try {
+                await initMediaPipe();
+            } catch (e) {
+                // Bỏ qua lỗi khởi tạo MediaPipe để trang vẫn hiển thị
+            }
             loadDefaultPhotos();  // Thêm ảnh mặc định
 
             const loader = document.getElementById('loader');
@@ -160,6 +214,9 @@
 
             bgMusic = document.getElementById('bg-music');
             if (bgMusic) { bgMusic.volume = 0.6; tryPlayMusic(); }
+
+            // Tự động chuyển sang hiệu ứng lời chúc sau vài giây
+            setTimeout(() => { enterMessageMode(); }, 3500);
 
             animate();
         }
@@ -240,94 +297,51 @@
             caneTexture.wrapS = THREE.RepeatWrapping;
             caneTexture.wrapT = THREE.RepeatWrapping;
             caneTexture.repeat.set(3, 3);
+            // tạo texture sao nhỏ
+            starTexture = createStarTexture();
         }
 
-        class Particle {
-            constructor(mesh, type, isDust = false) {
-                this.mesh = mesh;
-                this.type = type;
-                this.isDust = isDust;
-                
-                this.posTree = new THREE.Vector3();
-                this.posScatter = new THREE.Vector3();
-                this.baseScale = mesh.scale.x; 
-
-                const speedMult = (type === 'PHOTO') ? 0.3 : 2.0;
-                this.spinSpeed = new THREE.Vector3(
-                    (Math.random() - 0.5) * speedMult,
-                    (Math.random() - 0.5) * speedMult,
-                    (Math.random() - 0.5) * speedMult
-                );
-
-                this.calculatePositions();
+        function createStarTexture() {
+            const size = 128;
+            const canvas = document.createElement('canvas');
+            canvas.width = size; canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0,0,size,size);
+            // nền trong suốt
+            // vẽ hào quang tròn mờ
+            const grad = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+            grad.addColorStop(0, 'rgba(255, 247, 200, 0.9)');
+            grad.addColorStop(0.3, 'rgba(255, 232, 160, 0.7)');
+            grad.addColorStop(0.6, 'rgba(255, 210, 120, 0.35)');
+            grad.addColorStop(1, 'rgba(255, 180, 100, 0.0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(size/2, size/2, size/2, 0, Math.PI*2);
+            ctx.fill();
+            // vẽ ngôi sao 5 cánh nhỏ bên trong
+            const cx = size/2, cy = size/2;
+            const outer = size*0.22, inner = size*0.09;
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate(-Math.PI/2);
+            ctx.beginPath();
+            for (let i = 0; i < 5; i++) {
+                const a = (i * 2 * Math.PI) / 5;
+                ctx.lineTo(Math.cos(a) * outer, Math.sin(a) * outer);
+                const a2 = a + Math.PI / 5;
+                ctx.lineTo(Math.cos(a2) * inner, Math.sin(a2) * inner);
             }
-
-            calculatePositions() {
-                const h = CONFIG.particles.treeHeight;
-                const halfH = h / 2;
-                let t = Math.random(); 
-                t = Math.pow(t, 0.8); 
-                const y = (t * h) - halfH;
-                let rMax = CONFIG.particles.treeRadius * (1.0 - t); 
-                if (rMax < 0.5) rMax = 0.5;
-                const angle = t * 50 * Math.PI + Math.random() * Math.PI; 
-                const r = rMax * (0.8 + Math.random() * 0.4); 
-                this.posTree.set(Math.cos(angle) * r, y, Math.sin(angle) * r);
-
-                let rScatter = this.isDust ? (12 + Math.random()*20) : (8 + Math.random()*12);
-                const theta = Math.random() * Math.PI * 2;
-                const phi = Math.acos(2 * Math.random() - 1);
-                this.posScatter.set(
-                    rScatter * Math.sin(phi) * Math.cos(theta),
-                    rScatter * Math.sin(phi) * Math.sin(theta),
-                    rScatter * Math.cos(phi)
-                );
-            }
-
-            update(dt, mode, focusTargetMesh) {
-                let target = this.posTree;
-                
-                if (mode === 'SCATTER') target = this.posScatter;
-                else if (mode === 'FOCUS') {
-                    if (this.mesh === focusTargetMesh) {
-                        const desiredWorldPos = new THREE.Vector3(0, 2, 35);
-                        const invMatrix = new THREE.Matrix4().copy(mainGroup.matrixWorld).invert();
-                        target = desiredWorldPos.applyMatrix4(invMatrix);
-                    } else {
-                        target = this.posScatter;
-                    }
-                }
-
-                const lerpSpeed = (mode === 'FOCUS' && this.mesh === focusTargetMesh) ? 5.0 : 2.0; 
-                this.mesh.position.lerp(target, lerpSpeed * dt);
-
-                if (mode === 'SCATTER') {
-                    this.mesh.rotation.x += this.spinSpeed.x * dt;
-                    this.mesh.rotation.y += this.spinSpeed.y * dt;
-                    this.mesh.rotation.z += this.spinSpeed.z * dt;
-                } else if (mode === 'TREE') {
-                    this.mesh.rotation.x = THREE.MathUtils.lerp(this.mesh.rotation.x, 0, dt);
-                    this.mesh.rotation.z = THREE.MathUtils.lerp(this.mesh.rotation.z, 0, dt);
-                    this.mesh.rotation.y += 0.5 * dt; 
-                }
-                
-                if (mode === 'FOCUS' && this.mesh === focusTargetMesh) {
-                    this.mesh.lookAt(camera.position); 
-                }
-
-                let s = this.baseScale;
-                if (this.isDust) {
-                    s = this.baseScale * (0.8 + 0.4 * Math.sin(clock.elapsedTime * 4 + this.mesh.id));
-                    if (mode === 'TREE') s = 0; 
-                } else if (mode === 'SCATTER' && this.type === 'PHOTO') {
-                    s = this.baseScale * 2.5; 
-                } else if (mode === 'FOCUS') {
-                    if (this.mesh === focusTargetMesh) s = 4.5; 
-                    else s = this.baseScale * 0.8; 
-                }
-                
-                this.mesh.scale.lerp(new THREE.Vector3(s,s,s), 4*dt);
-            }
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(255, 255, 240, 0.95)';
+            ctx.shadowColor = 'rgba(255, 220, 160, 0.8)';
+            ctx.shadowBlur = 12;
+            ctx.fill();
+            ctx.restore();
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.anisotropy = 4;
+            tex.wrapS = THREE.ClampToEdgeWrapping;
+            tex.wrapT = THREE.ClampToEdgeWrapping;
+            return tex;
         }
 
         function createParticles() {
@@ -404,15 +418,223 @@
         }
 
         function createDust() {
-            const geo = new THREE.TetrahedronGeometry(0.08, 0);
-            const mat = new THREE.MeshBasicMaterial({ color: 0xffeebb, transparent: true, opacity: 0.8 });
+            // Dùng Sprite với texture ngôi sao để có vẻ ngoài như "sao nhỏ"
+            const matParams = { map: starTexture, color: 0xfff2cc, transparent: true, opacity: 0.0 };
+            const mat = new THREE.SpriteMaterial(matParams);
+            mat.depthWrite = false;
+            mat.blending = THREE.AdditiveBlending;
             
-            for(let i=0; i<CONFIG.particles.dustCount; i++) {
-                 const mesh = new THREE.Mesh(geo, mat);
-                 mesh.scale.setScalar(0.5 + Math.random());
+            for(let i=0;i<CONFIG.particles.dustCount;i++) {
+                 const mesh = new THREE.Sprite(mat.clone());
+                 mesh.scale.set(0.16 + Math.random()*0.10, 0.16 + Math.random()*0.10, 1); // sao rất nhỏ
                  mainGroup.add(mesh);
-                 particleSystem.push(new Particle(mesh, 'DUST', true));
+                 const p = new Particle(mesh, 'DUST', true);
+                 p.baseScale = 0.18; // đặt scale cơ bản nhỏ để chữ sắc nét
+                 particleSystem.push(p);
             }
+        }
+
+        // Tạo các điểm (tọa độ) từ một dòng chữ để hạt bụi ghép lại
+        function generateMessagePoints(text) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1400; canvas.height = 420; // tăng kích thước để chữ nét và lớn hơn
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0,0,canvas.width,canvas.height);
+            ctx.fillStyle = '#ffffff';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            let fontSize = 280; // phóng to font cơ bản hơn nữa
+            ctx.font = `bold ${fontSize}px Cinzel, serif`;
+            const metrics = ctx.measureText(text);
+            const maxWidth = canvas.width * 0.94;
+            if (metrics.width > maxWidth) {
+                fontSize = Math.floor(fontSize * (maxWidth / metrics.width));
+                ctx.font = `bold ${fontSize}px Cinzel, serif`;
+            }
+            ctx.shadowBlur = 32; // bóng mờ lớn hơn giúp lấy mẫu điểm rõ
+            ctx.shadowColor = 'rgba(255, 220, 160, 0.7)';
+            ctx.shadowBlur = 28; // bóng mờ lớn hơn giúp lấy mẫu điểm rõ
+            ctx.fillText(text, canvas.width/2, canvas.height/2);
+
+            const img = ctx.getImageData(0,0,canvas.width,canvas.height).data;
+            const points = [];
+            const step = 3; // mật độ điểm dày hơn nữa
+            for (let y = 0; y < canvas.height; y += step) {
+                for (let x = 0; x < canvas.width; x += step) {
+                    const a = img[(y * canvas.width + x) * 4 + 3];
+                    if (a > 200) {
+                        const vx = (x / canvas.width - 0.5) * 34; // trải rộng theo trục X lớn hơn
+                        const vy = (0.5 - y / canvas.height) * 12; // trải rộng theo trục Y lớn hơn
+                        const vz = 0;
+                        points.push(new THREE.Vector3(vx, vy, vz));
+                    }
+                }
+            }
+            return points;
+        }
+
+        class Particle {
+            constructor(mesh, type, isDust = false) {
+                this.mesh = mesh;
+                this.type = type;
+                this.isDust = isDust;
+                
+                this.posTree = new THREE.Vector3();
+                this.posScatter = new THREE.Vector3();
+                this.posMessage = new THREE.Vector3();
+                this.baseScale = mesh.scale.x; 
+                this.revealAt = 0; // thời điểm xuất hiện của hạt bụi trong MESSAGE
+
+                const speedMult = (type === 'PHOTO') ? 0.3 : 2.0;
+                this.spinSpeed = new THREE.Vector3(
+                    (Math.random() - 0.5) * speedMult,
+                    (Math.random() - 0.5) * speedMult,
+                    (Math.random() - 0.5) * speedMult
+                );
+
+                this.calculatePositions();
+            }
+
+            calculatePositions() {
+                const h = CONFIG.particles.treeHeight;
+                const halfH = h / 2;
+                let t = Math.random(); 
+                t = Math.pow(t, 0.8); 
+                const y = (t * h) - halfH;
+                let rMax = CONFIG.particles.treeRadius * (1.0 - t); 
+                if (rMax < 0.5) rMax = 0.5;
+                const angle = t * 50 * Math.PI + Math.random() * Math.PI; 
+                const r = rMax * (0.8 + Math.random() * 0.4); 
+                this.posTree.set(Math.cos(angle) * r, y, Math.sin(angle) * r);
+
+                let rScatter = this.isDust ? (12 + Math.random()*20) : (8 + Math.random()*12);
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                this.posScatter.set(
+                    rScatter * Math.sin(phi) * Math.cos(theta),
+                    rScatter * Math.sin(phi) * Math.sin(theta),
+                    rScatter * Math.cos(phi)
+                );
+            }
+
+            update(dt, mode, focusTargetMesh) {
+                let target = this.posTree;
+                
+                if (mode === 'SCATTER') target = this.posScatter;
+                else if (mode === 'FOCUS') {
+                    if (this.mesh === focusTargetMesh) {
+                        const desiredWorldPos = new THREE.Vector3(0, 2, 35);
+                        const invMatrix = new THREE.Matrix4().copy(mainGroup.matrixWorld).invert();
+                        target = desiredWorldPos.applyMatrix4(invMatrix);
+                    } else {
+                        target = this.posScatter;
+                    }
+                } else if (mode === 'MESSAGE') {
+                    // Hạt bụi (sao nhỏ) sẽ ghép thành chữ, các hạt khác giữ vai trò nền
+                    target = this.isDust ? this.posMessage : this.posTree;
+                }
+
+                const lerpSpeed = (mode === 'FOCUS' && this.mesh === focusTargetMesh) ? 5.0 : 2.0; 
+                this.mesh.position.lerp(target, lerpSpeed * dt);
+
+                if (mode === 'SCATTER') {
+                    this.mesh.rotation.x += this.spinSpeed.x * dt;
+                    this.mesh.rotation.y += this.spinSpeed.y * dt;
+                    this.mesh.rotation.z += this.spinSpeed.z * dt;
+                } else if (mode === 'TREE') {
+                    this.mesh.rotation.x = THREE.MathUtils.lerp(this.mesh.rotation.x, 0, dt);
+                    this.mesh.rotation.z = THREE.MathUtils.lerp(this.mesh.rotation.z, 0, dt);
+                    this.mesh.rotation.y += 0.5 * dt; 
+                } else if (mode === 'MESSAGE') {
+                    // Giảm xoay để chữ ổn định, chỉ hơi rung nhẹ cho hiệu ứng lung linh
+                    this.mesh.rotation.x = THREE.MathUtils.lerp(this.mesh.rotation.x, 0, 2*dt);
+                    this.mesh.rotation.z = THREE.MathUtils.lerp(this.mesh.rotation.z, 0, 2*dt);
+                }
+                
+                if (mode === 'FOCUS' && this.mesh === focusTargetMesh) {
+                    this.mesh.lookAt(camera.position); 
+                }
+
+                let s = this.baseScale;
+                if (this.isDust) {
+                    // Hạt bụi: nhấp nháy nhẹ
+                    const flicker = 0.85 + 0.3 * Math.sin(clock.elapsedTime * 5 + this.mesh.id);
+                    s = this.baseScale * flicker;
+                    if (mode === 'TREE') {
+                        s = 0; 
+                        if (this.mesh.material && 'opacity' in this.mesh.material) this.mesh.material.opacity = 0.0;
+                    }
+                    if (mode === 'MESSAGE') {
+                        // nhỏ hơn để chữ sắc nét
+                        s = this.baseScale * (0.8 + 0.20 * Math.sin(clock.elapsedTime * 4 + this.mesh.id));
+                        // điều khiển độ trong suốt theo thời gian xuất hiện
+                        const t = STATE.messageTimer - (this.revealAt || 0);
+                        let a = 0.0;
+                        if (t > 0) {
+                            a = 1.0 - Math.exp(-t * 3.0); // tăng nhanh rồi mượt dần
+                            a = Math.min(1.0, Math.max(0.0, a));
+                        }
+                        if (this.mesh.material && 'opacity' in this.mesh.material) this.mesh.material.opacity = a;
+                    } else {
+                        // các chế độ khác: hiển thị nhẹ
+                        if (this.mesh.material && 'opacity' in this.mesh.material) this.mesh.material.opacity = 0.6;
+                    }
+                } else if (mode === 'SCATTER' && this.type === 'PHOTO') {
+                    s = this.baseScale * 2.5; 
+                } else if (mode === 'FOCUS') {
+                    if (this.mesh === focusTargetMesh) s = 4.5; 
+                    else s = this.baseScale * 0.8; 
+                }
+                
+                this.mesh.scale.lerp(new THREE.Vector3(s,s,s), 4*dt);
+            }
+        }
+
+        function setMessage(text) {
+            // Hỗ trợ nhiều dòng: phân tách theo \n
+            const lines = text.split('\n');
+            const linePoints = lines.map(line => generateMessagePoints(line));
+            const dustParticles = particleSystem.filter(p => p.isDust);
+            // Trộn ngẫu nhiên để hạt phân bố đều
+            for (let i = dustParticles.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [dustParticles[i], dustParticles[j]] = [dustParticles[j], dustParticles[i]];
+            }
+            // Đặt tất cả hạt về opacity 0 trước
+            dustParticles.forEach(p => { if (p.mesh.material && 'opacity' in p.mesh.material) p.mesh.material.opacity = 0.0; });
+
+            let assignIndex = 0;
+            const lineDelay = 1.4; // thời gian trễ giữa các dòng
+            const spacingY = 5.0; // khoảng cách giữa các dòng theo trục Y để chữ rõ ràng
+            for (let li = 0; li < linePoints.length; li++) {
+                const pts = linePoints[li];
+                const baseDelay = li * lineDelay;
+                const offsetY = ((linePoints.length - 1) / 2 - li) * spacingY;
+                for (let i = 0; i < pts.length && assignIndex < dustParticles.length; i++) {
+                    const pt = pts[i].clone();
+                    pt.y += offsetY; // dịch dòng theo trục Y
+                    const jitter = new THREE.Vector3((Math.random()-0.5)*0.18, (Math.random()-0.5)*0.18, (Math.random()-0.5)*0.18);
+                    const p = dustParticles[assignIndex++];
+                    p.posMessage.copy(pt.add(jitter));
+                    // mỗi hạt có một độ trễ xuất hiện nhỏ để tạo cảm giác "hiện từ từ"
+                    p.revealAt = baseDelay + i * 0.003 + Math.random()*0.15;
+                }
+            }
+        }
+
+        function enterMessageMode() {
+            STATE.mode = 'MESSAGE';
+            setMessage(MESSAGES[STATE.messageIndex]);
+            STATE.messageTimer = 0;
+            // đảm bảo khởi điểm tất cả sao nhỏ tắt
+            const dustParticles = particleSystem.filter(p => p.isDust);
+            dustParticles.forEach(p => { if (p.mesh.material && 'opacity' in p.mesh.material) p.mesh.material.opacity = 0.0; });
+        }
+
+        function nextMessage() {
+            STATE.messageIndex = (STATE.messageIndex + 1) % MESSAGES.length;
+            setMessage(MESSAGES[STATE.messageIndex]);
+            STATE.messageTimer = 0;
         }
 
         function addPhotoToScene(texture) {
@@ -472,22 +694,33 @@
             webcamCtx = webcamCanvas.getContext('2d');
             webcamCanvas.width = 160; webcamCanvas.height = 120;
 
-            const vision = await FilesetResolver.forVisionTasks(
-                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
-            );
-            handLandmarker = await HandLandmarker.createFromOptions(vision, {
-                baseOptions: {
-                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
-                    delegate: "GPU"
-                },
-                runningMode: "VIDEO",
-                numHands: 1
-            });
+            // Khởi tạo MediaPipe an toàn, nếu lỗi thì bỏ qua tính năng gesture
+            try {
+                const vision = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+                );
+                handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numHands: 1
+                });
+            } catch (e) {
+                handLandmarker = null;
+            }
             
+            // Xin quyền camera, nếu thất bại thì vẫn tiếp tục chạy mà không có gesture
             if (navigator.mediaDevices?.getUserMedia) {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-                video.srcObject = stream;
-                video.addEventListener("loadeddata", predictWebcam);
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    video.srcObject = stream;
+                    video.addEventListener("loadeddata", predictWebcam);
+                } catch (err) {
+                    STATE.hand.detected = false;
+                    // Không có webcam hoặc bị từ chối quyền: bỏ qua, ứng dụng vẫn chạy
+                }
             }
         }
 
@@ -549,31 +782,138 @@
                 composer.setSize(window.innerWidth, window.innerHeight);
             });
 
-            // Ẩn/hiện tiêu đề bằng phím H
+            // Ẩn/hiện tiêu đề bằng phím H; điều khiển hiệu ứng chữ bằng M/N/T
             window.addEventListener('keydown', (e) => {
-                if (e.key.toLowerCase() === 'h') {
+                const k = e.key.toLowerCase();
+                if (k === 'h') {
                     document.querySelector('h1').classList.toggle('ui-hidden');
+                } else if (k === 'm') {
+                    enterMessageMode();
+                } else if (k === 'n') {
+                    if (STATE.mode === 'MESSAGE') nextMessage();
+                } else if (k === 't') {
+                    STATE.mode = 'TREE';
+                    STATE.focusTarget = null;
+                } else if (k === '1') {
+                    STATE.mode = 'TREE'; STATE.focusTarget = null;
+                } else if (k === '2') {
+                    STATE.mode = 'SCATTER'; STATE.focusTarget = null;
+                } else if (k === '3') {
+                    pickRandomPhotoFocus();
+                } else if (k === '4') {
+                    enterMessageMode();
+                } else if (k === 'f') {
+                    pickRandomPhotoFocus();
+                } else if (k === 'enter') {
+                    showCardOverlay();
+                } else if (k === ' ') { // Space: play/pause music
+                    if (bgMusic) { bgMusic.paused ? bgMusic.play().catch(()=>{}) : bgMusic.pause(); }
+                } else if (k === 'arrowleft') {
+                    STATE.rotation.y -= 0.08;
+                } else if (k === 'arrowright') {
+                    STATE.rotation.y += 0.08;
+                } else if (k === 'arrowup') {
+                    STATE.rotation.x -= 0.05;
+                } else if (k === 'arrowdown') {
+                    STATE.rotation.x += 0.05;
                 }
             });
 
-            window.addEventListener('click', () => { tryPlayMusic(); });
+            // Điều khiển bằng chuột: xoay SCATTER theo vị trí chuột
+            window.addEventListener('mousemove', (e) => {
+                const nx = (e.clientX / window.innerWidth) * 2 - 1;
+                const ny = (e.clientY / window.innerHeight) * 2 - 1;
+                STATE.mouse.x = nx;
+                STATE.mouse.y = -ny; // đảo trục Y cho trực quan
+                STATE.mouseActive = true;
+            });
+
+            // Double-click: mở thiệp chúc mừng
+            window.addEventListener('dblclick', () => { showCardOverlay(); });
+
+            // Click: chuyển đổi chế độ nhanh
+            window.addEventListener('click', () => { 
+                tryPlayMusic();
+                if (STATE.mode === 'TREE') {
+                    STATE.mode = 'SCATTER';
+                } else if (STATE.mode === 'SCATTER') {
+                    STATE.mode = 'TREE';
+                } else if (STATE.mode === 'MESSAGE') {
+                    nextMessage();
+                }
+            });
+
+            // Wheel: zoom camera
+            window.addEventListener('wheel', (e) => {
+                const dz = Math.sign(e.deltaY) * 2;
+                const z = THREE.MathUtils.clamp(camera.position.z + dz, 30, 85);
+                camera.position.z = z;
+            }, { passive: true });
+
             window.addEventListener('touchstart', () => { tryPlayMusic(); }, { passive: true });
             window.addEventListener('keydown', () => { tryPlayMusic(); });
+        }
+
+        function showCardOverlay() {
+            if (!cardOverlay) {
+                cardOverlay = document.getElementById('card-overlay');
+                cardMessageEl = document.getElementById('card-message');
+                cardCloseBtn = document.getElementById('card-close');
+                setupCardEvents();
+            }
+            const html = MESSAGES[STATE.messageIndex].split('\n').join('<br/>');
+            if (cardMessageEl) cardMessageEl.innerHTML = html;
+            if (cardOverlay) cardOverlay.classList.add('show');
+        }
+        function hideCardOverlay() {
+            if (!cardOverlay) return;
+            cardOverlay.classList.remove('show');
+        }
+        function setupCardEvents() {
+            if (!cardOverlay) return;
+            cardOverlay.addEventListener('click', (e) => { if (e.target === cardOverlay) hideCardOverlay(); });
+            if (cardCloseBtn) cardCloseBtn.addEventListener('click', hideCardOverlay);
+            window.addEventListener('keydown', (e) => { if (e.key.toLowerCase() === 'escape') hideCardOverlay(); });
+        }
+
+        function pickRandomPhotoFocus() {
+            const photos = particleSystem.filter(p => p.type === 'PHOTO');
+            if (photos.length) {
+                STATE.focusTarget = photos[Math.floor(Math.random()*photos.length)].mesh;
+                STATE.mode = 'FOCUS';
+                // Khi chọn ảnh để focus, mở thiệp chúc mừng
+                showCardOverlay();
+            }
         }
 
         function animate() {
             requestAnimationFrame(animate);
             const dt = clock.getDelta();
 
-            if (STATE.mode === 'SCATTER' && STATE.hand.detected) {
-                const targetRotY = STATE.hand.x * Math.PI * 0.9; 
-                const targetRotX = STATE.hand.y * Math.PI * 0.25;
-                STATE.rotation.y += (targetRotY - STATE.rotation.y) * 3.0 * dt;
-                STATE.rotation.x += (targetRotX - STATE.rotation.x) * 3.0 * dt;
+            if (STATE.mode === 'SCATTER') {
+                if (STATE.hand.detected) {
+                    const targetRotY = STATE.hand.x * Math.PI * 0.9; 
+                    const targetRotX = STATE.hand.y * Math.PI * 0.25;
+                    STATE.rotation.y += (targetRotY - STATE.rotation.y) * 3.0 * dt;
+                    STATE.rotation.x += (targetRotX - STATE.rotation.x) * 3.0 * dt;
+                } else if (STATE.mouseActive) {
+                    const targetRotY = STATE.mouse.x * Math.PI * 0.9; 
+                    const targetRotX = STATE.mouse.y * Math.PI * 0.25;
+                    STATE.rotation.y += (targetRotY - STATE.rotation.y) * 3.0 * dt;
+                    STATE.rotation.x += (targetRotX - STATE.rotation.x) * 3.0 * dt;
+                } else {
+                    STATE.rotation.y += 0.1 * dt; 
+                }
             } else {
                 if(STATE.mode === 'TREE') {
                     STATE.rotation.y += 0.3 * dt;
                     STATE.rotation.x += (0 - STATE.rotation.x) * 2.0 * dt;
+                } else if (STATE.mode === 'MESSAGE') {
+                    STATE.rotation.y += 0.05 * dt; // chậm để chữ nổi bật
+                    STATE.messageTimer += dt;
+                    if (STATE.messageTimer > 12 && MESSAGES.length > 1) {
+                        nextMessage();
+                    }
                 } else {
                      STATE.rotation.y += 0.1 * dt; 
                 }
